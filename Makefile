@@ -108,7 +108,7 @@ clean:
 
 require-container-engine:
 ifndef CONTAINER_ENGINE
-	$(error No container engine found — install podman or docker)
+	$(error No container engine found - install podman or docker)
 endif
 
 container: | require-container-engine
@@ -897,11 +897,11 @@ fips-scanner: | require-go
 
 patch-praxis:
 	@if [ ! -d "../praxis" ]; then \
-		echo "ERROR: ../praxis not found — clone praxis core as a sibling directory first"; \
+		echo "ERROR: ../praxis not found - clone praxis core as a sibling directory first"; \
 		exit 1; \
 	fi
 	@if grep -q '\[patch\.crates-io\]' Cargo.toml; then \
-		echo "Already patched — run 'make unpatch-praxis' first"; \
+		echo "Already patched - run 'make unpatch-praxis' first"; \
 		exit 1; \
 	fi
 	@printf '\n[patch.crates-io]\n\

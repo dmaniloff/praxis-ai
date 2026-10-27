@@ -277,7 +277,7 @@ file and its delivery channel with the deployment's access controls.
 The revision lifecycle has separate boundaries:
 
 ```text
-Producer rendered → Producer distributed → Gateway accepted → Gateway serving
+Producer rendered -> Producer distributed -> Gateway accepted -> Gateway serving
 ```
 
 Publication to a ConfigMap does not prove that the gateway loaded its contents.
