@@ -164,6 +164,22 @@ control characters, a query, or a fragment. See the [management-path example].
 
 ## Candidate selection
 
+A candidate is one offer to serve a particular model or tool through a named
+upstream cluster. If three candidates all serve `example-model`, they are three
+possible destinations for requests for that model. A candidate for a different
+model does not take part in that selection.
+
+There are two separate choices in the request path:
+
+1. `intelligent_route` chooses a candidate and sets its cluster name.
+2. `load_balancer` chooses an endpoint from that cluster's configured addresses.
+
+For example, three candidates may point to three clusters, each containing one
+endpoint. In that setup, splitting traffic between the candidates also splits
+traffic between those three endpoints. If one cluster contains several addresses,
+the candidate's share belongs to the entire cluster. Distribution between its
+addresses is the responsibility of the load balancer.
+
 Session affinity is considered before selecting a new candidate. For a new
 selection, the gateway uses the first producer-defined group that admits new
 requests, then applies the snapshot's selection policy within that group.
@@ -208,6 +224,286 @@ For example, if `primary` and `secondary` both serve `example-model`:
 These decisions use the snapshot's admission data. The filter does not probe
 upstream health or retry another candidate when a selected upstream fails.
 
+### Deterministic: prefer one destination
+
+Use `deterministic` when the producer's first eligible choice should receive all
+new selections. This is an ordered preference, not an equal traffic split.
+The following static filter always chooses `cluster-a` for `example-model`:
+
+```yaml
+filter: intelligent_route
+local_site: site-a
+model_header: X-Model
+clusters: [cluster-a, cluster-b, cluster-c]
+candidates:
+  - kind: inference_model
+    name: example-model
+    site: site-a
+    cluster: cluster-a
+  - kind: inference_model
+    name: example-model
+    site: site-b
+    cluster: cluster-b
+  - kind: inference_model
+    name: example-model
+    site: site-c
+    cluster: cluster-c
+```
+
+Keeping `cluster-b` and `cluster-c` in this list does not automatically retry
+them if `cluster-a` returns an error. For static configuration, changing the
+preferred destination requires a pipeline reload. With an overlay, the producer
+can reorder candidates or change their admission groups and publish a new
+snapshot. An existing session may still retain its eligible bound candidate.
+
+In a grouped overlay, set `selection_policy.mode` to `deterministic` to choose
+the first candidate in the first group that accepts new requests. Merely giving
+another candidate a smaller `rank` value does not move it ahead in the array.
+
+### Shared setup for equal and weighted selection
+
+The next examples use the same three upstream destinations. Save this proxy
+configuration and choose one of the JSON overlays below as `routing-config.json`
+in the proxy's working directory:
+
+```yaml
+listeners:
+  - name: inference
+    address: "0.0.0.0:8080"
+    filter_chains: [inference]
+
+filter_chains:
+  - name: inference
+    filters:
+      - filter: model_to_header
+        header: X-Model
+      - filter: intelligent_route
+        model_header: X-Model
+        overlay_file: ./routing-config.json
+        clusters: [cluster-a, cluster-b, cluster-c]
+      - filter: load_balancer
+        clusters:
+          - name: cluster-a
+            endpoints: ["127.0.0.1:8001"]
+          - name: cluster-b
+            endpoints: ["127.0.0.1:8002"]
+          - name: cluster-c
+            endpoints: ["127.0.0.1:8003"]
+
+insecure_options:
+  allow_private_endpoints: true # Local example backends only.
+```
+
+These are complete flat legacy payloads so they can be edited locally without
+calculating envelope digests. They intentionally omit `expected_overlay_scope`.
+For a controller-managed deployment, put the same routing fields inside the
+versioned envelope's `overlay` object, generate its digests, and configure scope
+validation as described in [overlay integrity and reloads](#overlay-integrity-and-reloads).
+Do not replace a scope-checked envelope with a flat payload.
+
+All candidates below serve the same model and belong to `selection_group: 0`.
+That group tells the gateway that these destinations are peers for selection.
+Without the group fields, `random` and `roundRobin` retain first-admitted
+ordering rather than sharing requests; `weightedRandom` rejects the payload.
+
+The examples leave affinity disabled, which is the default. Requests for
+`example-model` then make a new selection each time.
+
+### Round robin: take turns equally
+
+Use `roundRobin` when each eligible destination should take a turn. With the
+following overlay, new selections in one gateway filter instance follow
+`cluster-a`, `cluster-b`, `cluster-c`, then repeat:
+
+```json
+{
+  "local_site": "site-a",
+  "selection_policy": {"mode": "roundRobin"},
+  "candidates": [
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-a",
+      "cluster": "cluster-a",
+      "selection_group": 0
+    },
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-b",
+      "cluster": "cluster-b",
+      "selection_group": 0
+    },
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-c",
+      "cluster": "cluster-c",
+      "selection_group": 0
+    }
+  ]
+}
+```
+
+For six new selections from an initially unused counter, each candidate receives
+two. Concurrent requests may complete in a different order from their selection
+order. Gateway replicas maintain independent counters, so there is no global
+turn shared by the deployment. A replacement snapshot starts a new counter.
+
+### Random: give every destination an equal chance
+
+Use `random` when every candidate in the active group should have the same chance
+on each new selection. Replace the round-robin overlay with:
+
+```json
+{
+  "local_site": "site-a",
+  "selection_policy": {"mode": "random"},
+  "candidates": [
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-a",
+      "cluster": "cluster-a",
+      "selection_group": 0
+    },
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-b",
+      "cluster": "cluster-b",
+      "selection_group": 0
+    },
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-c",
+      "cluster": "cluster-c",
+      "selection_group": 0
+    }
+  ]
+}
+```
+
+Each candidate has a one-in-three chance. A sequence such as `a, a, c, b, c, a`
+is valid; random selection does not promise a turn for every destination in each
+batch of three. Over many independent selections, traffic should approach an
+equal split. Small samples can differ substantially.
+
+Do not add `traffic_weight` to this mode. Equal random selection treats every
+candidate equally without weights.
+
+### Weighted random: give destinations different shares
+
+Use `weightedRandom` when some destinations should receive a larger share of
+new selections. Every candidate in a nonempty weighted overlay must have a
+group and a positive integer weight. This overlay gives the three destinations
+weights of 60, 30, and 10:
+
+```json
+{
+  "local_site": "site-a",
+  "selection_policy": {"mode": "weightedRandom"},
+  "candidates": [
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-a",
+      "cluster": "cluster-a",
+      "selection_group": 0,
+      "traffic_weight": 60
+    },
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-b",
+      "cluster": "cluster-b",
+      "selection_group": 0,
+      "traffic_weight": 30
+    },
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-c",
+      "cluster": "cluster-c",
+      "selection_group": 0,
+      "traffic_weight": 10
+    }
+  ]
+}
+```
+
+The chance of choosing a candidate is its weight divided by the sum of the
+weights in the active group:
+
+| Candidate | Calculation | Expected share of new selections |
+| --- | --- | --- |
+| `cluster-a` | `60 / (60 + 30 + 10)` | 60% |
+| `cluster-b` | `30 / (60 + 30 + 10)` | 30% |
+| `cluster-c` | `10 / (60 + 30 + 10)` | 10% |
+
+Weights are relative, not required percentages: 6, 3, and 1 produce the same
+probabilities. Giving all three candidates weight 1 produces equal random
+selection, with a one-in-three chance each. Use `random` when equal sharing is
+all that is needed; use `weightedRandom` when the producer needs to express
+different shares or change them later.
+
+The result is probabilistic. For 1000 independent selections, 600/300/100 is an
+expectation, not a quota or guarantee. A low-weight candidate can receive several
+consecutive requests. Changing weights affects new selections after the new
+snapshot is accepted; it does not move existing session bindings.
+
+Weights must be from 1 through 1000. To withdraw a destination, have the producer
+remove it from the candidate list rather than assigning weight zero. The remaining
+weights are interpreted relative to their new total. If `cluster-c` is removed
+above, `cluster-a` and `cluster-b` have shares of roughly 67% and 33%.
+
+Each example cluster contains one endpoint. If `cluster-a` instead contains two
+endpoints and its downstream load balancer shares traffic equally between them,
+each would receive approximately half of cluster A's 60% share, or 30% of the
+total. `intelligent_route` does not itself enforce that endpoint-level split.
+
+### Priority groups: choose the tier before sharing traffic
+
+Groups express preference, while the selection policy distributes traffic inside
+the chosen group. Suppose group 0 contains two local candidates and group 1
+contains a remote fallback. As long as group 0 admits new requests, only its
+members participate. A large weight on the fallback does not pull traffic out
+of group 0.
+
+The following is a complete two-candidate example using the shared proxy setup:
+
+```json
+{
+  "local_site": "site-a",
+  "selection_policy": {"mode": "weightedRandom"},
+  "candidates": [
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-a",
+      "cluster": "cluster-a",
+      "selection_group": 0,
+      "traffic_weight": 1
+    },
+    {
+      "kind": "inference_model",
+      "name": "example-model",
+      "site": "site-b",
+      "cluster": "cluster-b",
+      "selection_group": 1,
+      "traffic_weight": 1000
+    }
+  ]
+}
+```
+
+Despite its larger weight, `cluster-b` receives no new selections while group 0
+is eligible. If the producer changes group 0 to `existing_only`, new sessions
+select `cluster-b`; existing bindings to `cluster-a` can continue. This is
+admission-based fallback. An HTTP error from cluster A does not by itself change
+the snapshot or make the filter try group 1.
+
 ### Admission and draining
 
 | `admission_state` | New selection | Existing bound session |
@@ -220,6 +516,20 @@ For example, publish `existing_only` to drain a candidate while preserving
 bound sessions. Publish `none` or remove the candidate to prevent its reuse.
 An existing-only candidate cannot be selected simply because the client sends
 a session key; a valid binding must already exist in this process.
+
+A typical drain proceeds in three steps:
+
+1. Publish the destination's group as `existing_only` and keep another group
+   available for new sessions. Every member of a group must have the same
+   admission state, so draining one member of an otherwise active group requires
+   the producer to regroup the candidates.
+2. Allow bound sessions to finish or expire. Requests without a usable binding
+   select from a group that still accepts new work.
+3. Remove the drained destination or exclude its group with `none` when it
+   should stop serving existing sessions too.
+
+Without session affinity, the gateway has no stored binding to reuse, so
+`existing_only` does not receive requests through this filter.
 
 ### Session affinity
 
@@ -242,6 +552,18 @@ Bindings live in memory in one filter instance; they do not provide affinity
 across replicas or restarts. The table is bounded to 10,000 bindings and evicts
 expired entries when full. If no room remains, routing continues without storing
 a new binding. The default TTL is 3600 seconds, with a maximum of 86400 seconds.
+
+For example, a new `X-Session-ID: conversation-42` request might choose
+`cluster-b` under the 60/30/10 policy. Later requests with the same key and model
+reuse cluster B while the binding is valid. They do not draw from the weights
+again. A request for a different model is a new capability selection even if it
+uses that same session key.
+
+This distinction matters when checking a traffic split. Repeating one session
+key measures affinity, not random distribution. To evaluate equal or weighted
+selection, leave affinity disabled or use a new session key for each selection.
+Weights describe new selections; long-lived sessions can make the share of
+total requests differ from the configured proportions.
 
 ## Overlay integrity and reloads
 
@@ -300,6 +622,18 @@ Do not mount the overlay using `subPath`: that prevents projected-volume updates
 from reaching the watched path. Overlay reloads update routing data, not load
 balancer endpoints, TLS settings, or filter-chain structure. Those changes
 require a pipeline reload or restart.
+
+For example, changing weights from 60/30/10 to 30/60/10 is a routing-data update.
+Publish a new valid overlay and wait for the serving revision to change; no
+endpoint change is required. Adding `cluster-d`, however, requires its cluster
+and endpoint configuration to exist in the pipeline and its name to be allowed
+by `clusters` before the overlay can select it.
+
+A rejected reload and an intentional withdrawal have different effects. A bad
+digest keeps the previous valid routes serving. A valid empty versioned overlay
+withdraws every candidate and makes matching requests return HTTP 404. Neither
+case should be diagnosed solely from the producer's published revision; check
+what the gateway accepted and is actually serving.
 
 ## Credentials and provider gateways
 
