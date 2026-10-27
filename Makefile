@@ -66,7 +66,7 @@ endif
 	test-token-rate-limit-sentinel-integration \
 	openai-conformance check-openai-conformance-reference test-openai-conformance \
 	test-responses-conformance \
-	lint lint-clippy lint-xtask lint-lean check-dep-budget fmt doc audit coverage-check \
+	lint lint-clippy lint-xtask lint-lean check-dep-budget fmt doc docs audit coverage-check \
 	setup-lint-toolchains \
 	require-container-engine \
 	container container-run \
@@ -456,6 +456,11 @@ fmt: setup-lint-toolchains
 
 doc:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
+
+docs:
+	cargo xtask generate-filter-docs
+	cargo xtask lint-filter-docs
+	cargo xtask lint-markdown-links
 
 audit:
 	cargo audit
@@ -938,6 +943,7 @@ help:
 	@echo "  build                cargo build --workspace"
 	@echo "  release              cargo build --release -p praxis-ai-proxy --no-default-features --features $(PRAXIS_AI_FEATURES)"
 	@echo "  check                cargo check --workspace"
+	@echo "  docs                 generate filter docs and check drift and Markdown links"
 	@echo "  clean                cargo clean"
 	@echo ""
 	@echo "Test:"
