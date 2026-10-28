@@ -4,7 +4,10 @@
 //! Tests for the `openai_web_search_dispatch` filter.
 
 use super::*;
-use crate::{openai::responses::agentic_loop::budget::SimpleBudget, web_search::config::MAX_SEARCH_QUERY_BYTES};
+use crate::{
+    openai::responses::{agentic_loop::budget::SimpleBudget, untrusted_tool_output},
+    web_search::config::MAX_SEARCH_QUERY_BYTES,
+};
 
 // -----------------------------------------------------------------------------
 // Helper: build filter from YAML
@@ -1580,7 +1583,8 @@ fn build_tool_result_messages_with_results() {
     assert_eq!(call["arguments"], r#"{"query":"example query"}"#);
     assert_eq!(output["type"], "function_call_output");
     assert_eq!(output["call_id"], "ws_123");
-    let text = output["output"].as_str().unwrap();
+    let text = untrusted_tool_output::unwrap(output["output"].as_str().unwrap())
+        .expect("search results are delimited as untrusted");
     assert!(text.contains("[1] Example"));
     assert!(text.contains("https://example.com"));
     assert!(text.contains("A description"));
@@ -3340,6 +3344,12 @@ fn build_tool_result_messages_incomplete_with_results_keeps_them() {
         output.contains(PARTIAL_UNAVAILABLE_OUTPUT),
         "the partial notice is appended so the model knows the rows are incomplete"
     );
+    let rows = output
+        .strip_suffix(PARTIAL_UNAVAILABLE_OUTPUT)
+        .and_then(|rest| rest.strip_suffix("\n\n"))
+        .and_then(untrusted_tool_output::unwrap)
+        .expect("the gathered rows are delimited and the notice follows outside the block");
+    assert!(rows.contains("Rust Lang"));
 }
 
 // -----------------------------------------------------------------------------

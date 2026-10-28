@@ -886,6 +886,8 @@ pub(crate) mod rehydrate;
 #[cfg(feature = "openai-responses")]
 pub(crate) mod request;
 #[cfg(feature = "openai-responses")]
+pub(crate) mod untrusted_tool_output;
+#[cfg(feature = "openai-responses")]
 #[cfg(feature = "openai-responses")]
 pub(crate) mod web_search_dispatch;
 

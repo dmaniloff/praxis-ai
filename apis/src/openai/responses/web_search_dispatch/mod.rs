@@ -1686,10 +1686,10 @@ pub(crate) fn build_tool_result_messages(
         // Never dispatched, every query failed, or no results: the notice is the only content.
         (true, Some(notice)) => notice.to_owned(),
         // Search successful without failure / partial: return the results.
-        (false, None) => format_search_results(results),
+        (false, None) => super::untrusted_tool_output::wrap(&format_search_results(results)),
         // Partial: keep the rows the call did gather and append the notice.
         (false, Some(notice)) => {
-            let mut content = format_search_results(results);
+            let mut content = super::untrusted_tool_output::wrap(&format_search_results(results));
             content.push_str("\n\n");
             content.push_str(notice);
             content

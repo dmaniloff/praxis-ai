@@ -2509,7 +2509,7 @@ fn build_success_result(
         "output": if is_error {
             format!("Error: {output_text}")
         } else {
-            output_text.to_owned()
+            super::untrusted_tool_output::wrap(output_text)
         },
     });
 

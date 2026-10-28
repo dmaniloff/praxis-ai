@@ -1541,7 +1541,7 @@ fn model_context_messages(
         serde_json::json!({
             "type": "function_call_output",
             "call_id": &call_id,
-            "output": output,
+            "output": super::untrusted_tool_output::wrap(output),
         }),
     ]
 }

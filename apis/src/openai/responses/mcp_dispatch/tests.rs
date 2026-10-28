@@ -41,6 +41,7 @@ use crate::{
         },
         mcp_tool_resolve::{McpToolIndex, encode_function_name},
         state::{DeferredMcpConnector, McpApprovalState, McpConnectorContextPolicy, ResponsesState},
+        untrusted_tool_output,
     },
     store::{
         PendingApprovalRecord, PersistedStateBackend, ResponseRecord, ResponseStore, ResponseStoreRegistry,
@@ -738,7 +739,10 @@ fn build_success_result_message_format() {
 
     assert_eq!(result.message["type"], "function_call_output");
     assert_eq!(result.message["call_id"], "call_1");
-    assert_eq!(result.message["output"], "Sunny, 22°C");
+    assert_eq!(
+        untrusted_tool_output::unwrap(result.message["output"].as_str().unwrap()),
+        Some("Sunny, 22°C")
+    );
     assert!(
         result.message.get("is_error").is_none(),
         "should not have is_error field"
@@ -1147,9 +1151,12 @@ fn process_call_result_preserves_mixed_content_in_both_representations() {
     let call_result = rmcp::model::CallToolResult::success(blocks.clone());
     let result = process_call_result(Ok(call_result), "c1", "srv", "tool", "{}", None, TEST_MAX_RESULT_BYTES);
 
+    // The model's copy is delimited as untrusted data; inside the delimiters it
+    // carries the same content as the client's.
     let model_facing = result.message["output"]
         .as_str()
-        .expect("function_call_output output is a string");
+        .and_then(untrusted_tool_output::unwrap)
+        .expect("function_call_output output is a delimited string");
     let client_facing = result.output_item["output"]
         .as_str()
         .expect("mcp_call output is a string");
@@ -1270,7 +1277,10 @@ fn parse_call_arguments_malformed_string_error_keeps_raw_arguments() {
 fn process_call_result_success() {
     let call_result = rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text("hello")]);
     let result = process_call_result(Ok(call_result), "c1", "srv", "tool", "{}", None, TEST_MAX_RESULT_BYTES);
-    assert_eq!(result.message["output"], "hello");
+    assert_eq!(
+        untrusted_tool_output::unwrap(result.message["output"].as_str().unwrap()),
+        Some("hello")
+    );
     assert_eq!(result.output_item["type"], "mcp_call");
     assert!(result.output_item.get("error").is_none() || result.output_item["error"].is_null());
 }
@@ -1952,7 +1962,10 @@ async fn execute_mcp_calls_rejects_an_aggregate_result_overflow() {
 fn process_call_result_empty_content_produces_empty_output() {
     let call_result = rmcp::model::CallToolResult::success(vec![]);
     let result = process_call_result(Ok(call_result), "c1", "srv", "tool", "{}", None, TEST_MAX_RESULT_BYTES);
-    assert_eq!(result.message["output"], "");
+    assert_eq!(
+        untrusted_tool_output::unwrap(result.message["output"].as_str().unwrap()),
+        Some("")
+    );
 }
 
 #[test]
@@ -1962,7 +1975,10 @@ fn process_call_result_multi_text_joins_with_newline() {
         rmcp::model::ContentBlock::text("world"),
     ]);
     let result = process_call_result(Ok(call_result), "c1", "srv", "tool", "{}", None, TEST_MAX_RESULT_BYTES);
-    assert_eq!(result.message["output"], "hello\nworld");
+    assert_eq!(
+        untrusted_tool_output::unwrap(result.message["output"].as_str().unwrap()),
+        Some("hello\nworld")
+    );
 }
 
 #[test]

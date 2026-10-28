@@ -33,6 +33,7 @@ use crate::{
     openai::responses::{
         agentic_loop::budget::SimpleBudget,
         state::{CollectedRound, FileSearchAssignment, SynthesisKind},
+        untrusted_tool_output,
     },
     subrequest::{SubRequestClient, SubRequestError, SubResponse},
 };
@@ -374,7 +375,9 @@ fn bridge_budget_retains_ascii_context_near_the_execution_cap() {
         budgeted.serialized_bytes > MAX_TOTAL_MODEL_CONTEXT_BYTES - 2_048,
         "the largest complete chunk prefix should use the available budget"
     );
-    assert!(messages[1]["output"].as_str().unwrap().starts_with("BEGIN"));
+    let output =
+        untrusted_tool_output::unwrap(messages[1]["output"].as_str().unwrap()).expect("the model context is delimited");
+    assert!(output.starts_with("BEGIN"));
 }
 
 #[test]
@@ -434,7 +437,8 @@ fn bridge_budget_reserves_nonmonotonic_outer_wrapper_before_chunks() {
         .model_messages
         .as_ref()
         .and_then(|messages| messages[1]["output"].as_str())
-        .expect("wrapper reservation should leave a bounded chunk prefix");
+        .and_then(untrusted_tool_output::unwrap)
+        .expect("wrapper reservation should leave a bounded, delimited chunk prefix");
     assert!(output.starts_with(&prefix));
     assert!(output.ends_with(&suffix));
     assert!(output.contains("chunk"));
@@ -557,6 +561,7 @@ async fn successful_callout_preserves_full_output_order_and_is_idempotent() {
         .iter()
         .find(|item| item["type"] == "function_call_output")
         .and_then(|item| item["output"].as_str())
+        .and_then(untrusted_tool_output::unwrap)
         .unwrap();
     assert!(model_output.starts_with("file_search found 1 chunks for \"revenue\":"));
     assert!(model_output.contains("<|file-a|>"));
@@ -856,7 +861,8 @@ async fn zero_match_search_completes_with_bounded_context() {
         .messages
         .iter()
         .find(|item| item["type"] == "function_call_output")
-        .and_then(|item| item["output"].as_str());
+        .and_then(|item| item["output"].as_str())
+        .and_then(untrusted_tool_output::unwrap);
     assert_eq!(output, Some("file_search found 0 chunks for \"query\":\n"));
 }
 
